@@ -1,0 +1,12 @@
+Source: ros-noetic-inorbit-republisher
+Section: misc
+Priority: optional
+Maintainer: InOrbit <support@inorbit.ai>
+Build-Depends: debhelper (>= 9.0.0), python3-yaml, ros-noetic-catkin, ros-noetic-roslib, ros-noetic-rospy, ros-noetic-std-msgs
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-noetic-inorbit-republisher
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, python3-yaml, ros-noetic-roslib, ros-noetic-rospy, ros-noetic-std-msgs
+Description: ROS to InOrbit topic republisher

@@ -1,0 +1,12 @@
+Source: ros-kinetic-inorbit-republisher
+Section: misc
+Priority: optional
+Maintainer: InOrbit <support@inorbit.ai>
+Build-Depends: debhelper (>= 9.0.0), python3-yaml, ros-kinetic-catkin, ros-kinetic-roslib, ros-kinetic-rospy, ros-kinetic-std-msgs
+Homepage: 
+Standards-Version: 3.9.2
+
+Package: ros-kinetic-inorbit-republisher
+Architecture: any
+Depends: ${shlibs:Depends}, ${misc:Depends}, python3-yaml, ros-kinetic-roslib, ros-kinetic-rospy, ros-kinetic-std-msgs
+Description: ROS to InOrbit topic republisher

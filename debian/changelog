@@ -1,0 +1,15 @@
+ros-kinetic-inorbit-republisher (0.2.2-1xenial) xenial; urgency=high
+
+  * Add support for mapping JSON of fields
+  * Contributors: Flor_Grosso
+
+ -- InOrbit <support@inorbit.ai>  Tue, 07 Dec 2021 03:00:00 -0000
+
+ros-kinetic-inorbit-republisher (0.2.1-1xenial) xenial; urgency=high
+
+  * Initial Implementation
+  * Contributors: Leandro Pineda
+
+ -- InOrbit <support@inorbit.ai>  Tue, 20 Jul 2021 03:00:00 -0000
+
+

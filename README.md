@@ -29,6 +29,26 @@ Create a YAML config file specifying the mappings you would like to use using th
       out:
         topic: "/inorbit/custom_data/0"
         key: "hardware_error"
+  - topic: "/cmd_vel"
+    msg_type: "geometry_msgs/Twist"
+    mappings:
+    - field: "linear"
+      mapping_type: "json_of_fields"
+      mapping_options:
+        fields: ["x", "y", "z"]
+      out:
+        topic: "/inorbit/linear_vel_test"
+        key: "linear_vel"
+  static_publishers:
+  - value: "this is a fixed string"
+    out:
+      topic: "/inorbit/custom_data/0"
+      key: "greeting"
+  - value_from:
+      environment_variable: "PATH"
+    out:
+      topic: "/inorbit/custom_data/0"
+      key: "env_path"
 ```
 
 Then launch the ``republisher.py`` script passing the config file as the ``config`` param.
@@ -43,9 +63,20 @@ A suggested way to organize this is by creating the config file and launch file 
 </launch>
 ```
 
-## Mapping types
+## Mapping ROS topics
 
 The republisher can map the ROS values to single field (e.g. ``'fruit=apple'``) or to an array of fields (e.g. ``'fruits=[{fruit1: apple, fruit2: orange}, {fruit1: melon, fruit2: apple}]'``). The former is useful to capture simple fields and the latter to get data from an array of values.
+
+### Single field: mapping options
+
+When republishing a single field, you can include a set of ``mapping_options`` for each ``mapping``. These include:
+
+* `filter`: a lambda expression that can be used to control whether or not the value is published based on a condition. For example, if you'd like to republish only String values that are different than ``SPAMMY STRING``, you can do it with:
+
+  ```yaml
+  mapping_options:
+    filter: 'lambda x: (x != "SPAMMY STRING")'
+  ```
 
 ### Array of fields: mapping options
 
@@ -67,6 +98,35 @@ When republishing an array of fields, you can include a set of ``mapping_options
     filter: 'lambda x: (x > 5)'
   ```
 
+### JSON of fields: mapping options
+
+When republishing several fields of a nested structure, this mapping type allows to bundle them together in a single JSON message instead of republishing all the fields of interest separately.
+
+The `mapping_options` for this type include:
+
+* `fields`: a set of fields that you'd like to capture from the nested message. For example, if your message definition looks like [Twist](http://docs.ros.org/en/api/geometry_msgs/html/msg/Twist.html):
+
+  setting
+
+  ```yaml
+  mapping_options:
+    fields: ["x", "y", "z"]
+  ```
+
+  would output a JSON object with the fields as keys with their respective values for the message
+
+  ```
+  data: "linear_vel={\"y\": 0.00013548378774430603, \"x\": 0.0732172280550003, \"z\": 0.0}"
+  ```
+
+## Publishing fixed values
+
+Sometimes it is also useful to publish fixed values to facilitate fleet-wide observability. It is possible to publish environment variables, package versions or fixed values using the `static_publishers` array.
+
+See the included example configuration in `config/example.yaml` for specific examples.
+
+These values will be published as latched and delivered only once every time a subscriber connects to the republisher.
+
 ## Building and running locally
 
 Find below instructions for building the package and running the node using the the code on the workspace (see also [catkin](https://catkin-tools.readthedocs.io/en/latest/verbs/catkin_build.html)).
@@ -75,7 +135,7 @@ Find below instructions for building the package and running the node using the 
 
 ```bash
 cd ~/catkin_ws
-rosdep install --from-paths ~/catkin_ws/src --ignore-src --rosdistro=noetic
+rosdep install --from-paths ~/catkin_ws/src --ignore-src --rosdistro=kinetic
 catkin clean
 catkin build inorbit_republisher --verbose
 ```
@@ -90,7 +150,6 @@ roslaunch launch/example.launch
 
 ## TODO
 
-* Mapping of nested, top-level and complex (object) fields
 * Schema validation
 * Better documentation
 * Error handling

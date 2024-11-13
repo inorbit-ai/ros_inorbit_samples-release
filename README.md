@@ -1,3 +1,26 @@
+## ros_inorbit_samples (noetic) - 0.3.1-1
+
+The packages in the `ros_inorbit_samples` repository were released into the `noetic` distro by running `/usr/bin/bloom-release --rosdistro noetic --track noetic ros_inorbit_samples` on `Wed, 13 Nov 2024 20:13:55 -0000`
+
+The `inorbit_republisher` package was released.
+
+Version of package(s) in repository `ros_inorbit_samples`:
+
+- upstream repository: https://github.com/inorbit-ai/ros_inorbit_samples.git
+- release repository: https://github.com/inorbit-ai/ros_inorbit_samples-release.git
+- rosdistro version: `0.3.0-1`
+- old version: `0.3.0-1`
+- new version: `0.3.1-1`
+
+Versions of tools used:
+
+- bloom version: `0.12.0`
+- catkin_pkg version: `1.0.0`
+- rosdep version: `0.25.1`
+- rosdistro version: `1.0.1`
+- vcstools version: `0.1.42`
+
+
 ## ros_inorbit_samples (foxy) - 0.4.1-1
 
 The packages in the `ros_inorbit_samples` repository were released into the `foxy` distro by running `/usr/bin/bloom-release --rosdistro foxy ros_inorbit_samples` on `Thu, 07 Sep 2023 16:00:24 -0000`

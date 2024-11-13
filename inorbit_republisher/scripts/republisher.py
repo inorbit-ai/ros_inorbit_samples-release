@@ -19,41 +19,32 @@
 # LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 # OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
 # THE SOFTWARE.
-
+#
 # ROS to InOrbit republisher node sample
 #
 # It uses a YAML-based configuration to map between arbitrary
 # ROS topics into InOrbit key/value custom data topics.
 
 import json
-import rclpy
-from rosidl_runtime_py.utilities import get_message
+import rospy
+import genpy
 import yaml
+import rospkg
 import os
 from std_msgs.msg import String
-from builtin_interfaces.msg import Time
+from roslib.message import get_message_class
 from operator import attrgetter
+from rospy_message_converter import message_converter
 
 # Types of mappings allowed
 MAPPING_TYPE_SINGLE_FIELD = "single_field"
 MAPPING_TYPE_ARRAY_OF_FIELDS = "array_of_fields"
 MAPPING_TYPE_JSON_OF_FIELDS = "json_of_fields"
+MAPPING_TYPE_SERIALIZE = "serialize"
 
 # Supported static publisher value sources
 STATIC_VALUE_FROM_PACKAGE_VERSION = "package_version"
 STATIC_VALUE_FROM_ENVIRONMENT_VAR = "environment_variable"
-
-"""
-Custom JSON encoder to deal with types found on ROS 2 messages that are not
-serializable to string by default.
-For now this includes:
- - bytes objects to decoded String objects
-"""
-class ROS2JSONEncoder(json.JSONEncoder):
-    def default(self, obj):
-        if isinstance(obj, bytes):
-            return obj.decode()
-        return json.JSONEncoder.default(self, obj)
 
 """
 Main node entry point.
@@ -62,19 +53,19 @@ Currently a simple function that does everything.
 We can later turn it into a class and divide in proper methods
 as complexity increases.
 """
-def main(args = None):
+def main():
     # Start the ROS node
-    rclpy.init(args=args)
-    node = rclpy.create_node('inorbit_republisher')
-    # Declares the "config" parameter, it contains the path of the config file
-    node.declare_parameter('config')
+    rospy.init_node('inorbit_republisher', anonymous=True, log_level=rospy.INFO)
+
     # Read republisher configuration from the 'config_file' or 'config' parameter
     # TODO(adamantivm) Error handling and schema checking
-    if node.has_parameter('config'):
-        config_file = node.get_parameter(
-            'config').get_parameter_value().string_value
-        node.get_logger().info("Using config from config file: {}".format(config_file))
+    if rospy.has_param('~config_file'):
+        config_file = rospy.get_param('~config_file')
+        rospy.loginfo("Using config from config file: {}".format(config_file))
         config_yaml = open(config_file, "r")
+    elif rospy.has_param('~config'):
+        config_yaml = rospy.get_param('~config')
+        rospy.loginfo("Using config from parameter server")
     config = yaml.safe_load(config_yaml)
 
     # Go through republisher configurations
@@ -82,37 +73,46 @@ def main(args = None):
     # custom data field - and a matching subscriber to receive and republish
     # the desired fields.
 
-    # Dictionary of publisher instances by topic name
+    # Dictionary of publisher instances
+    # These are keyed by *out* topic, in the case of regular input mappings
+    # or by *out*+*input* topic name in the specific case of input topics marked as latched
     pubs = {}
 
     # Dictionary of subscriber instances by topic name
     subs = {}
 
-    # TODO(adamantivm) Port ability to publish package versions from ROS 1 Noetic to ROS 2 Foxy
-    # # In case we want to query ROS package options
-    # rospack = rospkg.RosPack()
+    # In case we want to query ROS package options
+    rospack = rospkg.RosPack()
 
     # Set-up ROS topic republishers
     republishers = config.get('republishers', ())
     for repub in republishers:
 
         # Load subscriber message type
-        msg_class = get_message(repub['msg_type'])
+        msg_class = get_message_class(repub['msg_type'])
         if msg_class is None:
-            node.get_logger().warning('Failed to load msg class for {}'.format(repub['msg_type']))
+            rospy.logwarn('Failed to load msg class for {}'.format(repub['msg_type']))
             continue
+
+        # explicit handling of latched topics to overcome timing issues in early subscription phase
+        latched = repub.get("latched", False)
+        publisher_class = LatchPublisher if latched else rospy.Publisher
+
+        in_topic = repub['topic']
 
         # Create publisher for each new seen outgoing topic
         for mapping in repub['mappings']:
             out_topic = mapping['out']['topic']
-            if not out_topic in pubs:
-                # NOTE(adamantivm) Using QOS = 10 to match InOrbit Custom Data topic spec
-                pubs[out_topic] = node.create_publisher(String, out_topic, 10)
-            mapping['attrgetter'] = attrgetter(mapping['field'])
+            # If the input topic is latched, we need a separate instance per input topic
+            pub_key = "{}+{}".format(out_topic, in_topic) if latched else out_topic
+            if not pub_key in pubs:
+                pubs[pub_key] = publisher_class(out_topic, String, queue_size=100)
+            # 'field' mapping is not defined when serializing messages
+            if 'field' in mapping:
+                mapping['attrgetter'] = attrgetter(mapping['field'])
 
         # Prepare callback to relay messages through InOrbit custom data
-        def callback(msg, repub=repub):
-
+        def callback(msg, repub=repub, in_topic=in_topic, latched=latched):
             for mapping in repub['mappings']:
                 key = mapping['out']['key']
                 val = None
@@ -123,9 +123,6 @@ def main(args = None):
                     # TODO(adamantivm) Exception handling
                     field = extract_value(msg, attrgetter(mapping['field']))
                     val = process_single_field(field, mapping)
-                    # Time values can't be cleanly serialized into JSON. convert them to milliseconds
-                    if isinstance(val, Time):
-                        val = rclpy.time.Time.from_msg(val).nanoseconds / 1000000
 
                 elif mapping_type == MAPPING_TYPE_ARRAY_OF_FIELDS:
                     field = extract_value(msg, attrgetter(mapping['field']))
@@ -133,23 +130,29 @@ def main(args = None):
 
                 elif mapping_type == MAPPING_TYPE_JSON_OF_FIELDS:
                     try:
-                        val = extract_values_as_dict(msg, mapping, node)
+                        val = extract_values_as_dict(msg, mapping)
                         # extract_values_as_dict has the ability to filter messages and
                         # returns None when an element doesn't pass the filter
                         if val:
-                          val = json.dumps(val, cls=ROS2JSONEncoder)
+                          val = json.dumps(val)
                     except TypeError as e:
-                        node.get_logger().warning(f"Failed to serialize message: {e}")
+                        rospy.logwarn("Failed to serialize message: %s", e)
+                
+                elif mapping_type == MAPPING_TYPE_SERIALIZE:
+                    try:
+                        val = serialize(msg, mapping)
+                        if val:
+                          val = json.dumps(val)
+                    except TypeError as e:
+                        rospy.logwarn(f"Failed to serialize message: {e}")
 
                 if val is not None:
-                    pubs[topic].publish(String(data=f"{key}={val}"))
+                    pub_key = "{}+{}".format(topic, in_topic) if latched else topic
+                    pubs[pub_key].publish("{}={}".format(key, val))
 
-        in_topic = repub['topic']
-        # Reads QoS from the topic settings
-        in_qos = getattr(repub, 'qos', 10)
 
         # subscribe
-        subs[in_topic] = node.create_subscription(msg_class, in_topic, callback, in_qos)
+        subs[in_topic] = rospy.Subscriber(in_topic, msg_class, callback)
 
     # Set-up static publishers
     static_publishers = config.get('static_publishers', ())
@@ -163,29 +166,30 @@ def main(args = None):
         # Otherwise, fetch the value from the specified source
         if val is None:
             value_from = static_pub_config.get('value_from')
-            if STATIC_VALUE_FROM_ENVIRONMENT_VAR in value_from:
+            if STATIC_VALUE_FROM_PACKAGE_VERSION in value_from:
+                pkg_name = value_from[STATIC_VALUE_FROM_PACKAGE_VERSION]
+                # TODO(adamantivm) Exception handling
+                pkg_manifest = rospack.get_manifest(pkg_name)
+                val = pkg_manifest.version
+            elif STATIC_VALUE_FROM_ENVIRONMENT_VAR in value_from:
                 var_name = value_from[STATIC_VALUE_FROM_ENVIRONMENT_VAR]
                 val = os.environ.get(var_name)
-            # TODO(adamantivm) Implement publishing of package version for ROS 2
-            # elif STATIC_VALUE_FROM_PACKAGE_VERSION in value_from:
-            #     pkg_name = value_from[STATIC_VALUE_FROM_PACKAGE_VERSION]
-            #     # TODO(adamantivm) Exception handling
-            #     pkg_manifest = rospack.get_manifest(pkg_name)
-            #     val = pkg_manifest.version
 
         # If there is a value to publish, publish it using once per subscriber
-        # TODO(adamantivm) Make these values latched
         if val is not None:
-            pub = node.create_publisher(String, topic, 10)
-            pub.publish(String(data=f"{key}={val}"))
+            pub = LatchPublisher(topic, String, queue_size=100)
+            pub.publish(String("{}={}".format(key, val)))
 
-    node.get_logger().info("Republisher started")
-    rclpy.spin(node)
-    node.get_logger().info("Republisher shutting down")
+    rospy.loginfo('Republisher started')
+    rospy.spin()
+    rospy.loginfo('Republisher shutting down')
 
-    node.destroy_node()
-    rclpy.shutdown()
-    node.get_logger().info("Shutdown complete")
+    # Disconnect subs and pubs
+    for sub in subs.values():
+        sub.unregister()
+
+    for pub in pubs.values():
+        pub.unregister()
 
 """
 Extracts a value from the given message using the provided getter function
@@ -196,15 +200,11 @@ def extract_value(msg, getter_fn):
     val = getter_fn(msg)
     return val
 
-
 """
 Extracts several values from a given nested msg field and returns a dictionary of
 <field, value> elements
 """
-# TODO(elvioaruta): after refactoring and using Node as classes
-# remove the node from this function and figure out a better way
-# to log warnings inside
-def extract_values_as_dict(msg, mapping, node):
+def extract_values_as_dict(msg, mapping):
     values = {}
     base_getter_fn = attrgetter(mapping['field'])
     base_value = base_getter_fn(msg)
@@ -213,14 +213,14 @@ def extract_values_as_dict(msg, mapping, node):
         getter_fn = attrgetter(field)
         try:
             val = getter_fn(base_value)
-            # Time values aren't cleanly serialized into JSON.
-            # Convert them to milliseconds
-            if isinstance(val, Time):
-                val = rclpy.time.Time.from_msg(val).nanoseconds / 1000000
+            # genpy.Time values can't be serialized into JSON. convert them to seconds
+            # TODO(diegobatt): Catch other datatypes
+            if isinstance(val, genpy.Time):
+                val = val.to_sec()
             # TODO(diegobatt): Make it possible to use a different key than the field
             values[field] = val
         except AttributeError as e:
-            node.get_logger().warning(f"Couldn\'t get attribute {field}: {e}")
+            rospy.logwarn('Couldn\'t get attribute %s: %s', field, e)
     filter_fn = mapping.get('mapping_options', {}).get('filter')
     return values if not filter_fn or eval(filter_fn)(values) else None
 
@@ -265,7 +265,54 @@ def process_array(field, mapping):
         values['data'] = [{f: extract_value(elem, attrgetter(f)) for f in fields} for elem in filtered_array]
     else:
         values['data'] = filtered_array
-    return json.dumps(values, cls=ROS2JSONEncoder)
+
+    return json.dumps(values)
+
+"""
+Transforms the ROS message to json and:
+    - Filters out fields on the top level of the json only.
+"""
+def serialize(msg, mapping):
+    # TODO: design filtering support and implement it. It should be possible
+    # to leverage jq to do so. However, this would require adding a new rosdep
+    # rule for `pyjq`: https://pypi.org/project/pyjq/.
+    # filter = mapping.get('mapping_options', {}).get('filter')
+
+    # Get fields configuration
+    fields = mapping.get('mapping_options', {}).get('fields')
+    # Transform ROS message to dict
+    msg_dict = message_converter.convert_ros_message_to_dictionary(msg)
+
+    # Shrink output by keeping only selected fields or keys
+    if fields:
+        msg_dict = { k: v for k, v in msg_dict.items() if k in fields}
+
+    return msg_dict
+
+"""
+Wrapper class to allow publishing more than one latched message over the same topic, working
+around a rospy limitation caused by the use of Publisher singletons.
+For more details see: https://github.com/ros/ros_comm/issues/146#issuecomment-307507271
+"""
+class LatchPublisher(rospy.Publisher, rospy.SubscribeListener):
+    def __init__(self, name, data_class, tcp_nodelay=False, headers=None, queue_size=None):
+        super(LatchPublisher, self).__init__(name, data_class=data_class, tcp_nodelay=tcp_nodelay, headers=headers, queue_size=queue_size, subscriber_listener=self, latch=False)
+        self.latch_publisher = super(LatchPublisher, self)
+        # Store all kv messages when publishing.
+        self.message = dict()
+
+    def publish(self, msg):
+        # Map key to message so they can be all published when a peer subscribes.
+        self.message[msg.split('=')[0]] = msg
+        self.latch_publisher.publish(msg)
+
+    def peer_subscribe(self, resolved_name, publish, publish_single):
+        # Publish all key-values when a peer subscribes.
+        for v in self.message.values():
+            self.latch_publisher.publish(v)
 
 if __name__ == '__main__':
-    main()
+    try:
+        main()
+    except rospy.ROSInterruptException:
+        pass

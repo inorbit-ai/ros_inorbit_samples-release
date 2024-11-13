@@ -1,8 +1,8 @@
-# InOrbit republisher for ROS 2
+# InOrbit republisher for ROS 1
 
-This directory includes a republisher that allows mapping from arbitrary ROS2 values to ``InOrbit`` [custom data](https://www.inorbit.ai/faq#publish-custom-data) key/value pairs for application-specific observability.
+This directory includes a republisher that allows mapping from arbitrary ROS values to ``InOrbit`` [custom data](https://www.inorbit.ai/faq#publish-custom-data) key/value pairs for application-specific observability.
 
-Currently only mapping from ROS2 topics is supported. The republisher could be extended to map actions, services and parameters.
+Currently only mapping from ROS topics is supported. The republisher could be extended to map actions, services and parameters.
 
 ## Usage
 
@@ -11,16 +11,15 @@ Create a YAML config file specifying the mappings you would like to use using th
 ```yaml
   republishers:
   - topic: "/fruits_per_cubic_m"
-    qos: 5
-    msg_type: "fruit_msgs/msg/Citrus"
+    msg_type: "fruit_msgs/Citrus"
     mappings:
     - field: "num_oranges"
       mapping_type: "single_field"
       out:
-        topic: "/inorbit/custom_data"
+        topic: "/inorbit/custom_data/0"
         key: "oranges"
   - topic: "/hardware/status"
-    msg_type: "hw_msgs/msg/HardwareStatus"
+    msg_type: "hw_msgs/HardwareStatus"
     mappings:
     - field: "status"
       mapping_options:
@@ -28,29 +27,45 @@ Create a YAML config file specifying the mappings you would like to use using th
         filter: 'lambda x: (x.status == 1)'
       mapping_type: "array_of_fields"
       out:
-        topic: "/inorbit/custom_data"
+        topic: "/inorbit/custom_data/0"
         key: "hardware_error"
   - topic: "/cmd_vel"
-    qos: 10
-    msg_type: "geometry_msgs/msg/Twist"
+    msg_type: "geometry_msgs/Twist"
     mappings:
     - field: "linear"
       mapping_type: "json_of_fields"
       mapping_options:
         fields: ["x", "y", "z"]
-        filter: 'lambda vel: (vel["x"] > 0)'
       out:
         topic: "/inorbit/linear_vel_test"
         key: "linear_vel"
+  - topic: "/map_metadata"
+    latched: true
+    msg_type: "nav_msgs/MapMetaData"
+    mappings:
+    - field: "resolution"
+      mapping_type: "single_field"
+      out:
+        topic: "/inorbit/map_res_test"
+        key: "map_resolution"
+  - topic: "/navsat"
+    msg_type: "sensor_msgs/NavSatFix"
+    mappings:
+    - mapping_type: "serialize"
+      mapping_options:  
+        fields: ["status", "latitude", "longitude", "position_covariance_type"]
+      out:
+        topic: "/inorbit/custom_data/0"
+        key: "navsat"
   static_publishers:
   - value: "this is a fixed string"
     out:
-      topic: "/inorbit/custom_data"
+      topic: "/inorbit/custom_data/0"
       key: "greeting"
   - value_from:
       environment_variable: "PATH"
     out:
-      topic: "/inorbit/custom_data"
+      topic: "/inorbit/custom_data/0"
       key: "env_path"
 ```
 
@@ -60,20 +75,21 @@ A suggested way to organize this is by creating the config file and launch file 
 
 ```xml
 <launch>
-  <node name="inorbit_republisher" pkg="inorbit_republisher" exec="republisher">
-    <param name="config" value="$(dirname)/config/example.yaml" />
+  <node name="inorbit_republisher" pkg="inorbit_republisher" type="republisher.py">
+    <param name="config" textfile="$(find inorbit_republisher)/config/example.yaml" />
   </node>
 </launch>
 ```
 
-## Mapping ROS2 topics
+## Mapping ROS topics
 
-The republisher can map the ROS2 values to single field (e.g. ``'fruit=apple'``) or to an array of fields (e.g. ``'fruits=[{fruit1: apple, fruit2: orange}, {fruit1: melon, fruit2: apple}]'``). The former is useful to capture simple fields and the latter to get data from an array of values.
+The republisher can map the ROS values to single field (e.g. ``'fruit=apple'``) or to an array of fields (e.g. ``'fruits=[{fruit1: apple, fruit2: orange}, {fruit1: melon, fruit2: apple}]'``). The former is useful to capture simple fields and the latter to get data from an array of values.
 
 ### Single field: mapping options
 
 When republishing a single field, you can include a set of ``mapping_options`` for each ``mapping``. These include:
 
+* `mapping_type`: this mapping option should be set to `single_field`.
 * `filter`: a lambda expression that can be used to control whether or not the value is published based on a condition. For example, if you'd like to republish only String values that are different than ``SPAMMY STRING``, you can do it with:
 
   ```yaml
@@ -85,6 +101,7 @@ When republishing a single field, you can include a set of ``mapping_options`` f
 
 When republishing an array of fields, you can include a set of ``mapping_options`` for each ``mapping``. These include:
 
+* `mapping_type`: this mapping option should be set to `array_of_fields`.
 * `fields`: a set of fields that you'd like to capture from each array element. For example, if each array element contains the elements ``[a, c, d, e]`` and you'd like to get ``a`` and ``c`` only, you can specify it as:
 
   ```yaml
@@ -107,6 +124,7 @@ When republishing several fields of a nested structure, this mapping type allows
 
 The `mapping_options` for this type include:
 
+* `mapping_type`: this mapping option should be set to `json_of_fields`.
 * `fields`: a set of fields that you'd like to capture from the nested message. For example, if your message definition looks like [Twist](http://docs.ros.org/en/api/geometry_msgs/html/msg/Twist.html):
 
   setting
@@ -129,6 +147,26 @@ The `mapping_options` for this type include:
     filter: 'lambda linear_vel: (linear_vel["z"] != 0)'
   ```
 
+### Serialize: mapping options
+
+This mapping option transforms the entire ROS message to a JSON string.
+
+The `mapping_options` for this type include:
+
+* `mapping_type`: this mapping option should be set to `serialize`.
+* `fields`: (optional) a set of first level fields or keys to keep. If not provided, all fields are kept. For example, using the following mapping option for serializing 4 [NavSatFix](https://docs.ros.org/en/noetic/api/sensor_msgs/html/msg/NavSatFix.html) fields:
+
+  ```yaml
+  mapping_options:
+    fields: ["status", "latitude", "longitude", "position_covariance_type"]
+  ```
+
+  would output a JSON object with the fields as keys with their respective values for the message
+
+  ```text
+  data: "navsat={\"status\": {\"status\": 0, \"service\": 0}, \"latitude\": 0.0, \"longitude\" : 0.0, \"position_covariance_type\": 0}"
+  ```
+
 ## Publishing fixed values
 
 Sometimes it is also useful to publish fixed values to facilitate fleet-wide observability. It is possible to publish environment variables, package versions or fixed values using the `static_publishers` array.
@@ -137,9 +175,19 @@ See the included example configuration in `config/example.yaml` for specific exa
 
 These values will be published as latched and delivered only once every time a subscriber connects to the republisher.
 
+## Publishing latched values
+
+Republishing latched topics requires a special treatment to make sure that all latched messages, from each mapping defined, get published when a new subscriber connects to the output topic (this case is prone to subscription issues depending on nodes startup timing). To achieve this, add a flag to the input topic config indicating that it is latched:
+
+```yaml
+republishers:
+  - topic: "/map_metadata"
+    latched: true
+```
+
 ## Building and running locally
 
-Find below instructions for building the package and running the node using the the code on the workspace (see also [colcon](https://colcon.readthedocs.io/en/released/reference/verb/build.html)).
+Find below instructions for building the package and running the node using the the code on the workspace (see also [catkin](https://catkin-tools.readthedocs.io/en/latest/verbs/catkin_build.html)).
 
 ### Start ROS2 docker container (optional)
 
@@ -147,24 +195,28 @@ You can run the commands below for building and running the republisher inside a
 
 ```bash
 docker run -ti --rm \
-  --workdir /root/ros2_ws/ \
-  -v .:/root/ros2_ws/src/inorbit_republisher \
-  osrf/ros:foxy-desktop
+  --workdir /root/catkin_ws/ \
+  -v .:/root/catkin_ws/src/inorbit_republisher \
+  osrf/ros:noetic-desktop
+# Install catkin
+apt update && apt install python3-catkin-tools python3-osrf-pycommon -y
 ```
 
 ### Build
 
 ```bash
-cd ~/ros2_ws
-colcon build --packages-select inorbit_republisher --symlink-install
+cd ~/catkin_ws
+rosdep install --from-paths ~/catkin_ws/src --ignore-src --rosdistro=noetic
+catkin clean
+catkin build inorbit_republisher --verbose
 ```
 
 ### Run
 
 ```bash
-source install/local_setup.bash
+. ~/catkin_ws/devel/setup.bash
 # Using the launch file under the 'launch' directory
-ros2 launch inorbit_republisher example.launch.xml
+roslaunch inorbit_republisher example.launch
 ```
 
 ## TODO
